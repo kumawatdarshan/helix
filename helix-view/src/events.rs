@@ -2,7 +2,7 @@ use helix_core::{ChangeSet, Rope};
 use helix_event::events;
 use helix_lsp::LanguageServerId;
 
-use crate::{editor::Config, Document, DocumentId, Editor, ViewId};
+use crate::{document::EmitLspNotification, editor::Config, Document, DocumentId, Editor, ViewId};
 
 events! {
     DocumentDidOpen<'a> {
@@ -15,7 +15,7 @@ events! {
         view: ViewId,
         old_text: &'a Rope,
         changes: &'a ChangeSet,
-        ghost_transaction: bool
+        emit_lsp_notification: Option<EmitLspNotification>
     }
     EditorConfigDidChange<'a> {
         old_config: &'a Config,
