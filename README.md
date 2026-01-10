@@ -1,8 +1,6 @@
-| (5 hours ago) kumawatdarshan
-* 2dee0c562 PR(13600): paste-join                                                    
-
+* 2dee0c562 PR(13600): paste-join                                                 
 * 9d2806dd2 PR(14804): global lsp                                                    
-| (4 hours ago) kumawatdarshan
+
 * 36f4024f0 PR(11859): goto-file relative                                            
 | (4 hours ago) kumawatdarshan
 * 1f536ef52 PR(13650): buffer_nth                                                    

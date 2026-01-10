@@ -376,6 +376,24 @@ fn buffer_previous(
     Ok(())
 }
 
+fn buffer_nth(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let n: usize = args[0]
+        .parse()
+        .context("provided argument is not an integer")?;
+    ensure!(n != 0);
+    let (id, _) = if args.has_flag("reverse") {
+        cx.editor.documents.iter().nth_back(n - 1)
+    } else {
+        cx.editor.documents.iter().nth(n - 1)
+    }
+    .ok_or_else(|| anyhow!("buffer {n} is out of range"))?;
+    cx.editor.switch(*id, helix_view::editor::Action::Replace);
+    Ok(())
+}
+
 fn write_impl(
     cx: &mut compositor::Context,
     path: Option<&str>,
@@ -2434,7 +2452,8 @@ fn index(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow
     };
 
     let start = if let Some(arg) = args.get_flag("start") {
-        arg.parse().context("Argument to --start must be an integer")?
+        arg.parse()
+            .context("Argument to --start must be an integer")?
     } else {
         1
     };
@@ -2990,38 +3009,54 @@ const WRITE_NO_FORMAT_FLAG: Flag = Flag {
     ..Flag::DEFAULT
 };
 
-fn notifications_history(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+fn notifications_history(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
     }
-    
+
     crate::commands::notification::show_notification_history(cx);
     Ok(())
 }
 
-fn notifications_clear(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+fn notifications_clear(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
     }
-    
+
     crate::commands::notification::clear_notification_history(cx);
     Ok(())
 }
 
-fn notifications_dismiss(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+fn notifications_dismiss(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
     }
-    
+
     crate::commands::notification::dismiss_all_notifications(cx);
     Ok(())
 }
 
-fn notifications_test(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+fn notifications_test(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
     }
-    
+
     crate::commands::notification::test_notifications(cx);
     Ok(())
 }
@@ -4084,7 +4119,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
     },
     TypableCommand {
         name: "yank-diagnostic",
-        aliases: &[],
+        aliases: &["yd"],
         doc: "Yank diagnostic(s) under primary cursor to register, or clipboard by default",
         fun: yank_diagnostic,
         completer: CommandCompleter::all(completers::register),
@@ -4167,6 +4202,25 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+        },
+    TypableCommand {
+        name: "buffer-nth",
+        aliases: &["bi"],
+        doc: "Switch to the nth buffer, out of those you have open.",
+        fun: buffer_nth,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (1, None),
+            flags: &[
+                Flag {
+                    name: "reverse",
+                    alias: Some('r'),
+                    doc: "count buffers from the end",
+                    ..Flag::DEFAULT
+                },
+            ],
             ..Signature::DEFAULT
         },
     },
