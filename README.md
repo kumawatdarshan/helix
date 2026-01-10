@@ -1,3 +1,20 @@
+* 9d2806dd2 PR(14804): global lsp                                                    
+| (4 hours ago) kumawatdarshan
+* 36f4024f0 PR(11859): goto-file relative                                            
+| (4 hours ago) kumawatdarshan
+* 1f536ef52 PR(13650): buffer_nth                                                    
+| (5 hours ago) kumawatdarshan
+* 2300edbd4 PR(15013): popup follow cursor                                           
+| (5 hours ago) kumawatdarshan
+* 1ddaae5fb PR(14942): better hex parsing                                            
+| (5 hours ago) kumawatdarshan
+* 2dee0c562 PR(13600): paste-join                                                    
+| (5 hours ago) kumawatdarshan
+* 545df5631 PR(13565): bufferline context                                            
+| (5 hours ago) kumawatdarshan
+* 52cadeaba PR(14481): Code actions on save                                          
+| (5 hours ago) kumawatdarshan
+
 This is a just a fork of Helix. All claims rest with Helix maintainers and its copyright holders. I am just maintaining a fork. 
 For more information please see Helix's readme file. 
 
