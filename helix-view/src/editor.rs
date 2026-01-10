@@ -1,5 +1,4 @@
 use crate::{
-    Document, DocumentId, View, ViewId,
     annotations::diagnostics::{DiagnosticFilter, InlineDiagnosticsConfig},
     clipboard::ClipboardProvider,
     document::{
@@ -13,12 +12,13 @@ use crate::{
     register::Registers,
     theme::{self, Theme},
     tree::{self, Dimension, Resize, Tree},
+    Document, DocumentId, View, ViewId,
 };
 use helix_event::dispatch;
 use helix_vcs::DiffProviderRegistry;
 
 use futures_util::stream::select_all::SelectAll;
-use futures_util::{StreamExt, future};
+use futures_util::{future, StreamExt};
 use helix_lsp::{Call, LanguageServerId};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -35,31 +35,35 @@ use std::{
 };
 
 use tokio::{
-    sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
-    time::{Duration, Instant, Sleep, sleep},
+    sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
+    time::{sleep, Duration, Instant, Sleep},
 };
 
-use anyhow::{Error, anyhow, bail};
+use anyhow::{anyhow, bail, Error};
 
 pub use helix_core::diagnostic::Severity;
 use helix_core::{
-    Change, LineEnding, NATIVE_LINE_ENDING, Position, Range, Selection, Uri,
     auto_pairs::AutoPairs,
     diagnostic::DiagnosticProvider,
     syntax::{
         self,
         config::{AutoPairConfig, IndentationHeuristic, LanguageServerFeature, SoftWrap},
     },
+    Change, LineEnding, Position, Range, Selection, Uri, NATIVE_LINE_ENDING,
 };
 use helix_dap::{self as dap, registry::DebugAdapterId};
 use helix_lsp::lsp;
 use helix_stdx::path::canonicalize;
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeMap};
+use serde::{
+    de::{self, IntoDeserializer},
+    ser::SerializeMap,
+    Deserialize, Deserializer, Serialize, Serializer,
+};
 
 use arc_swap::{
-    ArcSwap,
     access::{DynAccess, DynGuard},
+    ArcSwap,
 };
 
 pub const DEFAULT_AUTO_SAVE_DELAY: u64 = 3000;
@@ -160,6 +164,40 @@ where
     }
 
     deserializer.deserialize_any(GutterVisitor)
+}
+
+fn deserialize_bufferline_show_or_struct<'de, D>(deserializer: D) -> Result<BufferLine, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct BufferLineVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for BufferLineVisitor {
+        type Value = BufferLine;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            write!(
+                formatter,
+                "a bufferline render mode or a detailed bufferline configuration"
+            )
+        }
+
+        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(BufferLineRenderMode::deserialize(v.into_deserializer())?.into())
+        }
+
+        fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::MapAccess<'de>,
+        {
+            BufferLine::deserialize(de::value::MapAccessDeserializer::new(map))
+        }
+    }
+
+    deserializer.deserialize_any(BufferLineVisitor)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -407,8 +445,6 @@ pub struct Config {
     /// Whether to display infoboxes. Defaults to true.
     pub auto_info: bool,
     pub file_picker: FilePickerConfig,
-    /// Configuration of the bufferline
-    pub bufferline: BufferLineConfig,
     /// Configuration of the file explorer
     pub file_explorer: FileExplorerConfig,
     /// Configuration of the statusline elements
@@ -431,6 +467,9 @@ pub struct Config {
     pub ruler_char: String,
     #[serde(default)]
     pub whitespace: WhitespaceConfig,
+    /// Persistently display open buffers along the top
+    #[serde(deserialize_with = "deserialize_bufferline_show_or_struct")]
+    pub bufferline: BufferLine,
     /// Vertical indent width guides.
     pub indent_guides: IndentGuidesConfig,
     /// Whether to color modes with different colors. Defaults to `false`.
@@ -1015,7 +1054,7 @@ pub struct SearchConfig {
     pub wrap_around: bool,
 }
 
-/// bufferline render modes
+/// Bufferline render modes
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BufferLineRenderMode {
@@ -1028,18 +1067,44 @@ pub enum BufferLineRenderMode {
     Multiple,
 }
 
+/// Bufferline filename context modes
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BufferLineContextMode {
+    /// Only show the filename
+    None,
+    /// Expand filenames to the smallest unique path
+    #[default]
+    Minimal,
+}
+
+/// Bufferline configuration
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
-pub struct BufferLineConfig {
-    pub render_mode: BufferLineRenderMode,
+#[serde(rename_all = "kebab-case")]
+pub struct BufferLine {
+    /// When to show the bufferline
+    pub show: BufferLineRenderMode,
+    /// How to display filenames (with or without context)
+    pub context: BufferLineContextMode,
+    /// Separator between buffers
     pub separator: String,
 }
 
-impl Default for BufferLineConfig {
+impl Default for BufferLine {
     fn default() -> Self {
         Self {
-            render_mode: BufferLineRenderMode::default(),
-            separator: String::from("│"),
+            show: BufferLineRenderMode::default(),
+            context: BufferLineContextMode::default(),
+            separator: String::from("▏"),
+        }
+    }
+}
+
+impl From<BufferLineRenderMode> for BufferLine {
+    fn from(show: BufferLineRenderMode) -> Self {
+        Self {
+            show,
+            ..Default::default()
         }
     }
 }
@@ -1629,7 +1694,7 @@ impl Default for Config {
             completion_trigger_len: 2,
             auto_info: true,
             file_picker: FilePickerConfig::default(),
-            bufferline: BufferLineConfig::default(),
+            bufferline: BufferLine::default(),
             file_explorer: FileExplorerConfig::default(),
             statusline: StatusLineConfig::default(),
             cursor_shape: CursorShapeConfig::default(),
@@ -1743,7 +1808,12 @@ impl Notification {
             let elapsed = self.timestamp.elapsed();
             let expired = elapsed >= timeout;
             if expired {
-                log::warn!("Notification {} expired: elapsed={:?}, timeout={:?}", self.id, elapsed, timeout);
+                log::warn!(
+                    "Notification {} expired: elapsed={:?}, timeout={:?}",
+                    self.id,
+                    elapsed,
+                    timeout
+                );
             }
             expired
         } else {
@@ -1775,7 +1845,7 @@ impl NotificationManager {
     pub fn add(&mut self, mut notification: Notification) -> usize {
         notification.id = self.next_id;
         self.next_id += 1;
-        
+
         let id = notification.id; // Store the ID before moving
         self.notifications.push(notification);
 
@@ -1813,7 +1883,7 @@ impl NotificationManager {
 
     pub fn cleanup_expired(&mut self) {
         let before_count = self.notifications.len();
-        
+
         // Debug: Check each notification before cleanup
         for notification in &self.notifications {
             if let Some(timeout) = notification.timeout {
@@ -1824,12 +1894,17 @@ impl NotificationManager {
                 }
             }
         }
-        
-        self.notifications.retain(|n| !n.is_expired() && !n.dismissed);
+
+        self.notifications
+            .retain(|n| !n.is_expired() && !n.dismissed);
         let after_count = self.notifications.len();
         if before_count != after_count {
-            log::warn!("DEBUG: Cleaned up {} expired/dismissed notifications ({} -> {})", 
-                      before_count - after_count, before_count, after_count);
+            log::warn!(
+                "DEBUG: Cleaned up {} expired/dismissed notifications ({} -> {})",
+                before_count - after_count,
+                before_count,
+                after_count
+            );
         }
     }
 
@@ -2093,7 +2168,7 @@ impl Editor {
         self.idle_timer
             .as_mut()
             .reset(Instant::now() + config.idle_timeout);
-        
+
         // Cleanup expired notifications periodically
         self.cleanup_notifications();
     }
@@ -2106,7 +2181,7 @@ impl Editor {
     pub fn set_status<T: Into<Cow<'static, str>>>(&mut self, status: T) {
         let status = status.into();
         log::debug!("editor status: {}", status);
-        
+
         let config = self.config();
         if config.notifications.enable && config.notifications.style == NotificationStyle::Popup {
             // Only create notification, don't set status_msg for popup style
@@ -2124,7 +2199,7 @@ impl Editor {
     pub fn set_error<T: Into<Cow<'static, str>>>(&mut self, error: T) {
         let error = error.into();
         log::debug!("editor error: {}", error);
-        
+
         let config = self.config();
         if config.notifications.enable && config.notifications.style == NotificationStyle::Popup {
             // Only create notification, don't set status_msg for popup style
@@ -2150,7 +2225,7 @@ impl Editor {
     pub fn set_warning<T: Into<Cow<'static, str>>>(&mut self, warning: T) {
         let warning = warning.into();
         log::warn!("editor warning: {}", warning);
-        
+
         let config = self.config();
         if config.notifications.enable && config.notifications.style == NotificationStyle::Popup {
             // Only create notification, don't set status_msg for popup style
@@ -2195,7 +2270,11 @@ impl Editor {
         self.notify_with_severity(message, Severity::Error)
     }
 
-    pub fn notify_with_severity<T: Into<Cow<'static, str>>>(&mut self, message: T, severity: Severity) -> usize {
+    pub fn notify_with_severity<T: Into<Cow<'static, str>>>(
+        &mut self,
+        message: T,
+        severity: Severity,
+    ) -> usize {
         let config = self.config();
         if !config.notifications.enable {
             // Fall back to traditional status messages if notifications are disabled
@@ -2208,7 +2287,7 @@ impl Editor {
         }
 
         let mut notification = Notification::new(message, severity);
-        
+
         // Set default timeout if configured
         if config.notifications.default_timeout > Duration::ZERO {
             let timeout = config.notifications.default_timeout;
@@ -2224,22 +2303,40 @@ impl Editor {
         }
 
         let id = self.notifications.add(notification);
-        
+
         // Also set status message for compatibility if using statusline style
         if config.notifications.style == NotificationStyle::Statusline {
             match severity {
                 Severity::Error => {
-                    let msg = self.notifications.notifications.last().unwrap().message.clone();
+                    let msg = self
+                        .notifications
+                        .notifications
+                        .last()
+                        .unwrap()
+                        .message
+                        .clone();
                     self.status_msg = Some((msg, Severity::Error));
-                },
+                }
                 Severity::Warning => {
-                    let msg = self.notifications.notifications.last().unwrap().message.clone();
+                    let msg = self
+                        .notifications
+                        .notifications
+                        .last()
+                        .unwrap()
+                        .message
+                        .clone();
                     self.status_msg = Some((msg, Severity::Warning));
-                },
+                }
                 _ => {
-                    let msg = self.notifications.notifications.last().unwrap().message.clone();
+                    let msg = self
+                        .notifications
+                        .notifications
+                        .last()
+                        .unwrap()
+                        .message
+                        .clone();
                     self.status_msg = Some((msg, Severity::Info));
-                },
+                }
             }
         }
 
@@ -2931,7 +3028,8 @@ impl Editor {
     }
 
     pub fn resize_buffer(&mut self, resize_type: Resize, dimension: Dimension) {
-        self.tree.resize_buffer(resize_type, dimension, &self.config());
+        self.tree
+            .resize_buffer(resize_type, dimension, &self.config());
     }
 
     pub fn toggle_focus_window(&mut self) {
@@ -3215,11 +3313,8 @@ fn try_restore_indent(doc: &mut Document, view: &mut View) {
     };
 
     fn inserted_a_new_blank_line(changes: &[Operation], pos: usize, line_end_pos: usize) -> bool {
-        if let [
-            Operation::Retain(move_pos),
-            Operation::Insert(ref inserted_str),
-            Operation::Retain(_),
-        ] = changes
+        if let [Operation::Retain(move_pos), Operation::Insert(ref inserted_str), Operation::Retain(_)] =
+            changes
         {
             let mut graphemes = inserted_str.graphemes(true);
             move_pos + inserted_str.len() == pos

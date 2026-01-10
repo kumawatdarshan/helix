@@ -34,6 +34,8 @@ use helix_view::{
     Document, DocumentId, Editor, Theme, View,
 };
 use std::{
+    collections::HashMap,
+    ffi::OsString,
     mem::take,
     num::NonZeroUsize,
     ops,
@@ -524,9 +526,7 @@ impl EditorView {
 
         // Statusline on the last row of the view area.
         // The cmdline space reservation is handled at the top level in EditorView::render.
-        let statusline_area = view
-            .area
-            .clip_top(view.area.height.saturating_sub(1));
+        let statusline_area = view.area.clip_top(view.area.height.saturating_sub(1));
 
         let mut context =
             statusline::RenderContext::new(editor, doc, view, is_focused, &self.spinners);
@@ -974,6 +974,7 @@ impl EditorView {
     }
 
     /// Render bufferline at the top
+    /// Render bufferline at the top
     pub fn render_bufferline(&mut self, editor: &Editor, viewport: Rect, surface: &mut Surface) {
         self.bufferline_positions.clear();
         surface.clear_with(
@@ -998,13 +999,37 @@ impl EditorView {
 
         self.bufferline_info.clear();
 
+        // Generate context-aware filenames
+        use helix_view::editor::BufferLineContextMode;
+        let fnames = match editor.config().bufferline.context.clone() {
+            BufferLineContextMode::None => {
+                let scratch = PathBuf::from(SCRATCH_BUFFER_NAME); // default filename to use for scratch buffer
+                HashMap::<DocumentId, String>::from_iter(editor.documents().map(|doc| {
+                    (
+                        doc.id(),
+                        doc.path()
+                            .unwrap_or(&scratch)
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_str()
+                            .unwrap_or_default()
+                            .to_owned(),
+                    )
+                }))
+            }
+            BufferLineContextMode::Minimal => expand_fname_contexts(
+                editor.documents().collect::<Vec<&Document>>(),
+                SCRATCH_BUFFER_NAME,
+            ),
+        };
+
         // First pass: calculate all buffer positions and determine if scrolling is needed
         let mut total_width = 0u16;
         let mut buffer_texts = Vec::new();
         let mut buffer_widths = Vec::new();
 
         for (idx, doc) in editor.documents().enumerate() {
-            let fname = Self::make_document_name(doc, editor);
+            let fname = fnames.get(&doc.id()).unwrap();
 
             // Add separator width if not the first document
             if idx > 0 {
@@ -1033,21 +1058,22 @@ impl EditorView {
         }
 
         // Determine scroll offset
-        let scroll_offset = if let Some(current_idx) = editor.documents().position(|d| d.id() == current_doc) {
-            if let Some(&target_x) = self.bufferline_positions.get(current_idx) {
-                if target_x >= viewport.width / 2 {
-                    target_x
-                        .saturating_sub(viewport.width / 2)
-                        .min(total_width.saturating_sub(viewport.width))
+        let scroll_offset =
+            if let Some(current_idx) = editor.documents().position(|d| d.id() == current_doc) {
+                if let Some(&target_x) = self.bufferline_positions.get(current_idx) {
+                    if target_x >= viewport.width / 2 {
+                        target_x
+                            .saturating_sub(viewport.width / 2)
+                            .min(total_width.saturating_sub(viewport.width))
+                    } else {
+                        0
+                    }
                 } else {
                     0
                 }
             } else {
                 0
-            }
-        } else {
-            0
-        };
+            };
 
         // Second pass: render with the calculated offset
         for (idx, doc) in editor.documents().enumerate() {
@@ -1057,10 +1083,18 @@ impl EditorView {
             // Render separator if not first document
             if idx > 0 {
                 let sep = &editor.config().bufferline.separator;
-                let sep_x = buffer_x.saturating_sub(sep.len() as u16).saturating_sub(scroll_offset);
+                let sep_x = buffer_x
+                    .saturating_sub(sep.len() as u16)
+                    .saturating_sub(scroll_offset);
                 if sep_x < viewport.width {
                     let render_x = viewport.x + sep_x;
-                    surface.set_stringn(render_x, viewport.y, sep, (viewport.width - sep_x) as usize, bufferline_inactive);
+                    surface.set_stringn(
+                        render_x,
+                        viewport.y,
+                        sep,
+                        (viewport.width - sep_x) as usize,
+                        bufferline_inactive,
+                    );
                 }
             }
 
@@ -1104,8 +1138,10 @@ impl EditorView {
 
             // Track buffer info for mouse clicks (adjust for scroll offset)
             let start_x = actual_render_x;
-            let end_x = (actual_render_x + visible_text.len() as u16).min(viewport.x + viewport.width);
-            self.bufferline_info.add_buffer_info(doc.id(), start_x..end_x);
+            let end_x =
+                (actual_render_x + visible_text.len() as u16).min(viewport.x + viewport.width);
+            self.bufferline_info
+                .add_buffer_info(doc.id(), start_x..end_x);
         }
     }
 
@@ -1688,9 +1724,11 @@ impl EditorView {
                 let editor = &mut cxt.editor;
 
                 let config = editor.config();
-                let bufferline_visible = match config.bufferline.render_mode {
+                let bufferline_visible = match config.bufferline.show {
                     helix_view::editor::BufferLineRenderMode::Always => true,
-                    helix_view::editor::BufferLineRenderMode::Multiple => editor.documents.len() > 1,
+                    helix_view::editor::BufferLineRenderMode::Multiple => {
+                        editor.documents.len() > 1
+                    }
                     _ => false,
                 };
                 if bufferline_visible && row == 0 {
@@ -2091,9 +2129,9 @@ impl Component for EditorView {
 
         // check if bufferline should be rendered
         use helix_view::editor::BufferLineRenderMode;
-        let use_bufferline = match config.bufferline.render_mode {
+        let use_bufferline = match config.bufferline.show {
             BufferLineRenderMode::Always => true,
-            BufferLineRenderMode::Multiple if cx.editor.documents.len() > 1 => true,
+            BufferLineRenderMode::Multiple => 1 < cx.editor.documents.len(),
             _ => false,
         };
 
@@ -2105,7 +2143,7 @@ impl Component for EditorView {
         } else {
             area.clip_bottom(1) // Reserve for commandline
         };
-        
+
         if use_bufferline {
             editor_area = editor_area.clip_top(1);
         }
@@ -2194,11 +2232,10 @@ impl Component for EditorView {
 
         // Cleanup expired notifications before rendering
         cx.editor.cleanup_notifications();
-        
+
         // Render notification popup
         self.notification_popup.render(area, surface, cx);
     }
-
     fn cursor(&self, _area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
         match editor.cursor() {
             (pos, kind) => {
@@ -2244,7 +2281,6 @@ struct BufferInfo {
     columns: std::ops::Range<u16>,
 }
 
-
 fn canonicalize_key(key: &mut KeyEvent) {
     if let KeyEvent {
         code: KeyCode::Char(_),
@@ -2253,4 +2289,76 @@ fn canonicalize_key(key: &mut KeyEvent) {
     {
         key.modifiers.remove(KeyModifiers::SHIFT)
     }
+}
+
+#[derive(Default)]
+struct PathTrie {
+    parents: HashMap<OsString, PathTrie>,
+    visits: u32,
+}
+
+/// Returns a unique path ending for the current set of documents in the
+/// editor. For example, documents `a/b` and `c/d` would resolve to `b` and `d`
+/// respectively, while `a/b/c` and `a/d/c` would resolve to `b/c` and `d/c`
+/// respectively.
+fn expand_fname_contexts<'a>(
+    documents: Vec<&'a Document>,
+    scratch: &'a str,
+) -> HashMap<DocumentId, String> {
+    let mut trie = HashMap::new();
+
+    // Build out a reverse prefix trie for all documents
+    for doc in documents.iter() {
+        let Some(path) = doc.path() else {
+            continue;
+        };
+
+        let mut current_subtrie = &mut trie;
+
+        for component in path.components().rev() {
+            let segment = component.as_os_str().to_os_string();
+            let subtrie = current_subtrie
+                .entry(segment)
+                .or_insert_with(PathTrie::default);
+
+            subtrie.visits += 1;
+            current_subtrie = &mut subtrie.parents;
+        }
+    }
+
+    let mut fnames = HashMap::new();
+
+    // Navigate the built reverse prefix trie to find the smallest unique path
+    for doc in documents.iter() {
+        let Some(path) = doc.path() else {
+            fnames.insert(doc.id(), scratch.to_owned());
+            continue;
+        };
+
+        let mut current_subtrie = &trie;
+        let mut built_path = vec![];
+
+        for component in path.components().rev() {
+            let segment = component.as_os_str().to_os_string();
+            let subtrie = current_subtrie
+                .get(&segment)
+                .expect("should have contained segment");
+
+            built_path.insert(0, segment);
+
+            if subtrie.visits == 1 {
+                fnames.insert(
+                    doc.id(),
+                    PathBuf::from_iter(built_path.iter())
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+                break;
+            }
+
+            current_subtrie = &subtrie.parents;
+        }
+    }
+
+    fnames
 }
