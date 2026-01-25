@@ -698,7 +698,13 @@ impl EditorView {
                 bufferline_inactive
             };
 
-            let text = format!(" {}{} ", fname, if doc.is_modified() { "[+]" } else { "" });
+            // Scratch buffers never show `[+]`, even when modified
+            let modified = if doc.is_modified() && doc.path().is_some() {
+                "[+]"
+            } else {
+                ""
+            };
+            let text = format!(" {fname}{modified} ");
             let used_width = viewport.x.saturating_sub(x);
             let rem_width = surface.area.width.saturating_sub(used_width);
 
