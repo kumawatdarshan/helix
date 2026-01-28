@@ -6,16 +6,16 @@ use crate::job::Job;
 
 use super::*;
 
-use helix_core::command_line::{Args, Flag, Signature, Token, TokenKind};
 use helix_core::fuzzy::fuzzy_match;
 use helix_core::indent::MAX_INDENT;
 use helix_core::line_ending;
 use helix_stdx::path::home_dir;
+use helix_view::command_line::{Args, Flag, Signature, Token, TokenKind};
+use helix_view::completers::{self, CommandCompleter, Completer};
 use helix_view::document::{read_to_string, DEFAULT_LANGUAGE_NAME};
 use helix_view::editor::{CloseError, ConfigEvent};
 use helix_view::expansion;
 use serde_json::Value;
-use ui::completers::{self, Completer};
 
 #[derive(Clone)]
 pub struct TypableCommand {
@@ -27,45 +27,6 @@ pub struct TypableCommand {
     /// What completion methods, if any, does this command have?
     pub completer: CommandCompleter,
     pub signature: Signature,
-}
-
-#[derive(Clone)]
-pub struct CommandCompleter {
-    // Arguments with specific completion methods based on their position.
-    positional_args: &'static [Completer],
-
-    // All remaining arguments will use this completion method, if set.
-    var_args: Completer,
-}
-
-impl CommandCompleter {
-    const fn none() -> Self {
-        Self {
-            positional_args: &[],
-            var_args: completers::none,
-        }
-    }
-
-    const fn positional(completers: &'static [Completer]) -> Self {
-        Self {
-            positional_args: completers,
-            var_args: completers::none,
-        }
-    }
-
-    const fn all(completer: Completer) -> Self {
-        Self {
-            positional_args: &[],
-            var_args: completer,
-        }
-    }
-
-    fn for_argument_number(&self, n: usize) -> &Completer {
-        match self.positional_args.get(n) {
-            Some(completer) => completer,
-            _ => &self.var_args,
-        }
-    }
 }
 
 fn exit(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
@@ -561,12 +522,29 @@ fn force_write_buffer_close(
     buffer_close_by_ids_impl(cx, &document_ids, false)
 }
 
-fn new_file(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+fn change_language_new_buffer(
+    cx: &mut compositor::Context,
+    doc_id: DocumentId,
+    language_id: &str,
+) -> anyhow::Result<()> {
+    let loader = cx.editor.syn_loader.load();
+    let doc = doc_mut!(cx.editor, &doc_id);
+    doc.set_language_by_language_id(language_id, &loader)
+        .with_context(|| format!("Failed to change language to {language_id}"))?;
+    doc.detect_indent_and_line_ending();
+    Ok(())
+}
+
+fn new_file(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
     }
 
-    cx.editor.new_file(Action::Replace);
+    let doc_id = cx.editor.new_file(Action::Replace);
+
+    if let Some(language_id) = args.get_flag("language") {
+        change_language_new_buffer(cx, doc_id, language_id)?;
+    }
 
     Ok(())
 }
@@ -1926,22 +1904,30 @@ fn hsplit(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
     Ok(())
 }
 
-fn vsplit_new(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+fn vsplit_new(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
     }
 
-    cx.editor.new_file(Action::VerticalSplit);
+    let doc_id = cx.editor.new_file(Action::VerticalSplit);
+
+    if let Some(language_id) = args.get_flag("language") {
+        change_language_new_buffer(cx, doc_id, language_id)?;
+    }
 
     Ok(())
 }
 
-fn hsplit_new(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+fn hsplit_new(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
     }
 
-    cx.editor.new_file(Action::HorizontalSplit);
+    let doc_id = cx.editor.new_file(Action::HorizontalSplit);
+
+    if let Some(language_id) = args.get_flag("language") {
+        change_language_new_buffer(cx, doc_id, language_id)?;
+    }
 
     Ok(())
 }
@@ -2763,6 +2749,13 @@ const WRITE_NO_FORMAT_FLAG: Flag = Flag {
     ..Flag::DEFAULT
 };
 
+const LANGUAGE_FLAG: Flag = Flag {
+    name: "language",
+    alias: Some('l'),
+    doc: "set the language for the new buffer",
+    completer: Some(CommandCompleter::all(completers::language)),
+};
+
 pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
     TypableCommand {
         name: "exit",
@@ -2959,6 +2952,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
+            flags: &[LANGUAGE_FLAG],
             ..Signature::DEFAULT
         },
     },
@@ -3476,6 +3470,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
+            flags: &[LANGUAGE_FLAG],
             ..Signature::DEFAULT
         },
     },
@@ -3498,6 +3493,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
+            flags: &[LANGUAGE_FLAG],
             ..Signature::DEFAULT
         },
     },
@@ -3887,7 +3883,7 @@ fn command_line_doc(input: &str) -> Option<Cow<'_, str>> {
             } else {
                 0
             };
-            let arg_len = if flag.completions.is_some() {
+            let arg_len = if flag.completer.is_some() {
                 ARG_PLACEHOLDER.len()
             } else {
                 0
@@ -3921,7 +3917,7 @@ fn command_line_doc(input: &str) -> Option<Cow<'_, str>> {
                     } else {
                         ""
                     },
-                    if flag.completions.is_some() {
+                    if flag.completer.is_some() {
                         ARG_PLACEHOLDER
                     } else {
                         ""
@@ -4031,15 +4027,16 @@ pub fn complete_command_args(
                 .into_iter()
                 .map(|(name, _)| ((offset + token.content_start).., format!("--{name}").into()))
                 .collect(),
-                CompletionState::FlagArgument(flag) => fuzzy_match(
-                    &token.content,
-                    flag.completions
-                        .expect("flags in FlagArgument always have completions"),
-                    false,
-                )
-                .into_iter()
-                .map(|(value, _)| ((offset + token.content_start).., (*value).into()))
-                .collect(),
+                CompletionState::FlagArgument(flag) => {
+                    let flag_completer = flag
+                        .completer
+                        .expect("flags in FlagArgument always have completions");
+                    let completer = flag_completer.for_argument_number(0);
+                    completer(editor, &token.content)
+                        .into_iter()
+                        .map(|(range, span)| ((offset + token.content_start + range.start).., span))
+                        .collect()
+                }
             }
         }
         TokenKind::Expand | TokenKind::Expansion(ExpansionKind::Shell) => {
