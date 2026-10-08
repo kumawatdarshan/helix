@@ -1,0 +1,30 @@
+# Separate: breadcrumb navigation bar (+ scratch follow-up)
+15573 | feat: breadcrumb navigation bar (RoloEdits, OPEN, MERGEABLE) — LSP-based path bar atop editor
+https://github.com/Axlefublr/helix/commit/1167e4e757bf7386af5b3290f78613613baf95df | fix: breadcrumbs force-disabled on scratch buffers
+
+# Group 1: bufferline (all touch ui/editor.rs — merge as one stack)
+14072 | feat: auto-scrolling bufferline (kfatyuip, OPEN, CONFLICTING) — SKIPPED: incompatible with click-tracking + unique paths; revisit as feat
+13565 | bufferline: shortest unique paths (icorbrey, OPEN, MERGEABLE) — bufferline.context = none|minimal
+12173 | feat: click bufferline to select buffer (irh, OPEN, MERGEABLE) — fixes #4942
+
+# Group 2: prompt history (Axlefublr, both ui/prompt.rs — stack together)
+15266 | feat: history search in prompts (OPEN, MERGEABLE) — up/down filters by current input substring
+15271 | feat: prompts deduplicate history (OPEN, MERGEABLE) — re-accept moves entry to end
+
+# Group 3: scratch buffer behavior (Axlefublr commits — bufferline marker + save handling)
+https://github.com/Axlefublr/helix/commit/db32757012612f524f5cd4713bb6ba0dcbdb6b6c | fix: :write-all silent about scratch buffers
+https://github.com/Axlefublr/helix/commit/1174aabb09116f8484a3f1cea1116ee63d278439 | fix: scratch buffers never show [+] in bufferline
+https://github.com/Axlefublr/helix/commit/5145ec82275ca8efbb82b4335a0eb62adb27de06 | fix: ignore scratch buffers when saving
+
+# Group 4: new commands (all CLOSED upstream — resurrect deliberately)
+13600 | feat: :paste-join command (nik-rev, CLOSED, MERGEABLE) — join yanked selections at one cursor
+12208 | feat: goto_hover into scratch buffer (nik-rev, CLOSED, MERGEABLE) — searchable hover docs
+13053 | feat: local search in buffer on Space+l (oxcrow, CLOSED, UNKNOWN) — single-doc global_search
+
+# Group 5: motions & search UX
+13760 | fix: jump_to_label prefers home-row chars (halbuer, OPEN, MERGEABLE) — trivial, merge first
+9843 | feat: indent-level textobject mii/mai (EpocSquadron, OPEN, MERGEABLE, old 2024) — closes #1810
+11700 | feat: search match index/total in statusline (useche, OPEN, CONFLICTING)
+
+# Standalone: session persistence (large, CONFLICTING — merge last)
+15309 | feat: cursor position persistence across sessions (jamel, OPEN, CONFLICTING) — opt-in editor.session + sessions.json
