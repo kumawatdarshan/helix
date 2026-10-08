@@ -215,3 +215,37 @@
           ]))
     ])
   (#set! injection.language "sql"))
+
+((macro_invocation
+   macro:
+     [
+       (scoped_identifier
+         name: (_) @_macro_name)
+       (identifier) @_macro_name
+     ]
+   (token_tree) @injection.content)
+ (#eq? @_macro_name "view")
+ (#set! injection.language "html")
+ (#set! injection.include-children))
+
+; Highlight SQL in `let *sql*/*query* = r#"..."#`
+(let_declaration
+  pattern: (identifier) @_var
+  value: (raw_string_literal
+    (string_content) @injection.content)
+  (#match? @_var "(?i)(sql|query)")
+  (#set! injection.language "sql"))
+
+; Highlight SQL in `let *sql*/*query* = format!(r#"..."#)`
+; Only the first macro argument is SQL.
+(let_declaration
+  pattern: (identifier) @_var
+  value: (macro_invocation
+    macro: (identifier) @_macro
+    (#eq? @_macro "format")
+    (token_tree
+      .
+      (raw_string_literal
+        (string_content) @injection.content)))
+  (#match? @_var "(?i)(sql|query)")
+  (#set! injection.language "sql"))
