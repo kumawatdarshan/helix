@@ -26,6 +26,7 @@
 - [`[editor.inline-diagnostics]` Section](#editorinline-diagnostics-section)
 - [`[editor.word-completion]` Section](#editorword-completion-section)
 - [`[editor.workspace-trust]` Section](#editorworkspace-trust-section)
+- [`[editor.session]` Section](#editorsession-section)
 
 ### `[editor]` Section
 
@@ -598,6 +599,19 @@ trust](./workspace-trust.md) chapter for the full feature.
 | `level`   | The default level of trust for every workspace.                         | `"servers"` |
 | `prompt`  | Whether to show a modal when opening a file in an untrusted workspace.   | `true`      |
 | `trusted` | Glob patterns whose matching workspaces are trusted without a grant.     | `[]`        |
+### `[editor.session]` Section
+
+Options for controlling session state persistence and garbage collection.
+
+| Key              | Description                                                                                              | Default |
+| ---              | ---                                                                                                      | ---     |
+| `restore-cursor` | Restore cursor position when reopening files                                                             | `false` |
+| `gc-max-age`     | Maximum age in days for session entries before garbage collection removes them. Set to `0` to disable GC | `90`    |
+
+Session state is stored in `~/.cache/helix/sessions.json` and tracks cursor
+positions for previously opened files. Garbage collection runs at most once per
+day on startup and removes entries that haven't been visited within `gc-max-age`
+days. GC only runs when `restore-cursor` is enabled.
 
 Example:
 
@@ -615,4 +629,9 @@ level = "servers"
 # Discouraged: skips .helix/ change detection and trusts anything that lands
 # under a matching path. `~` and environment variables are expanded.
 trusted = ["~/src/github.com/me/*"]
+
+[editor.session]
+restore-cursor = true
+# Keep session entries for up to 180 days
+gc-max-age = 180
 ```
