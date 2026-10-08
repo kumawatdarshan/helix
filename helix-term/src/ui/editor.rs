@@ -32,7 +32,10 @@ use helix_view::{
     keyboard::{KeyCode, KeyModifiers},
     Document, DocumentId, Editor, Theme, View,
 };
-use std::{mem::take, num::NonZeroUsize, ops, path::PathBuf, rc::Rc};
+
+use std::{
+    collections::HashMap, ffi::OsString, mem::take, num::NonZeroUsize, ops, path::PathBuf, rc::Rc,
+};
 
 use tui::{buffer::Buffer as Surface, text::Span};
 
@@ -669,7 +672,6 @@ impl EditorView {
 
     /// Render bufferline at the top
     pub fn render_bufferline(&mut self, editor: &Editor, viewport: Rect, surface: &mut Surface) {
-        let scratch = PathBuf::from(SCRATCH_BUFFER_NAME); // default filename to use for scratch buffer
         surface.clear_with(
             viewport,
             editor
@@ -692,15 +694,31 @@ impl EditorView {
         let current_doc = view!(editor).doc;
 
         self.bufferline_info.clear();
+        use helix_view::editor::BufferLineContextMode;
+        let fnames = match editor.config().bufferline.context.clone() {
+            BufferLineContextMode::None => {
+                let scratch = PathBuf::from(SCRATCH_BUFFER_NAME); // default filename to use for scratch buffer
+                HashMap::<DocumentId, String>::from_iter(editor.documents().map(|doc| {
+                    (
+                        doc.id(),
+                        doc.path()
+                            .unwrap_or(&scratch)
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_str()
+                            .unwrap_or_default()
+                            .to_owned(),
+                    )
+                }))
+            }
+            BufferLineContextMode::Minimal => expand_fname_contexts(
+                editor.documents().collect::<Vec<&Document>>(),
+                SCRATCH_BUFFER_NAME,
+            ),
+        };
 
         for doc in editor.documents() {
-            let fname = doc
-                .path()
-                .unwrap_or(&scratch)
-                .file_name()
-                .unwrap_or_default()
-                .to_str()
-                .unwrap_or_default();
+            let fname = fnames.get(&doc.id()).unwrap();
 
             let style = if current_doc == doc.id() {
                 bufferline_active
@@ -1390,7 +1408,13 @@ impl EditorView {
             MouseEventKind::Down(MouseButton::Left) => {
                 let editor = &mut cxt.editor;
 
-                if is_bufferline_visible(editor) && row == 0 {
+                use helix_view::editor::BufferLineRenderMode;
+                let bufferline_visible = match editor.config().bufferline.show {
+                    BufferLineRenderMode::Always => true,
+                    BufferLineRenderMode::Multiple => 1 < editor.documents.len(),
+                    _ => false,
+                };
+                if bufferline_visible && row == 0 {
                     if let Some(buffer_info) = self.bufferline_info.get_clicked_buffer(column) {
                         editor.switch(buffer_info.document_id, helix_view::editor::Action::Replace);
                     }
@@ -1778,7 +1802,13 @@ impl Component for EditorView {
         surface.set_style(area, cx.editor.theme.get("ui.background"));
         let config = cx.editor.config();
 
-        let use_bufferline = is_bufferline_visible(cx.editor);
+        // check if bufferline should be rendered
+        use helix_view::editor::BufferLineRenderMode;
+        let use_bufferline = match config.bufferline.show {
+            BufferLineRenderMode::Always => true,
+            BufferLineRenderMode::Multiple => 1 < cx.editor.documents.len(),
+            _ => false,
+        };
 
         // -1 for commandline and -1 for bufferline
         let mut editor_area = area.clip_bottom(1);
@@ -1933,17 +1963,6 @@ struct BufferInfo {
     columns: std::ops::Range<u16>,
 }
 
-fn is_bufferline_visible(editor: &Editor) -> bool {
-    use helix_view::editor::BufferLine;
-    let config = editor.config();
-
-    match config.bufferline {
-        BufferLine::Always => true,
-        BufferLine::Multiple => editor.documents.len() > 1,
-        BufferLine::Never => false,
-    }
-}
-
 fn canonicalize_key(key: &mut KeyEvent) {
     if let KeyEvent {
         code: KeyCode::Char(_),
@@ -1952,4 +1971,76 @@ fn canonicalize_key(key: &mut KeyEvent) {
     {
         key.modifiers.remove(KeyModifiers::SHIFT)
     }
+}
+
+#[derive(Default)]
+struct PathTrie {
+    parents: HashMap<OsString, PathTrie>,
+    visits: u32,
+}
+
+/// Returns a unique path ending for the current set of documents in the
+/// editor. For example, documents `a/b` and `c/d` would resolve to `b` and `d`
+/// respectively, while `a/b/c` and `a/d/c` would resolve to `b/c` and `d/c`
+/// respectively.
+fn expand_fname_contexts<'a>(
+    documents: Vec<&'a Document>,
+    scratch: &'a str,
+) -> HashMap<DocumentId, String> {
+    let mut trie = HashMap::new();
+
+    // Build out a reverse prefix trie for all documents
+    for doc in documents.iter() {
+        let Some(path) = doc.path() else {
+            continue;
+        };
+
+        let mut current_subtrie = &mut trie;
+
+        for component in path.components().rev() {
+            let segment = component.as_os_str().to_os_string();
+            let subtrie = current_subtrie
+                .entry(segment)
+                .or_insert_with(PathTrie::default);
+
+            subtrie.visits += 1;
+            current_subtrie = &mut subtrie.parents;
+        }
+    }
+
+    let mut fnames = HashMap::new();
+
+    // Navigate the built reverse prefix trie to find the smallest unique path
+    for doc in documents.iter() {
+        let Some(path) = doc.path() else {
+            fnames.insert(doc.id(), scratch.to_owned());
+            continue;
+        };
+
+        let mut current_subtrie = &trie;
+        let mut built_path = vec![];
+
+        for component in path.components().rev() {
+            let segment = component.as_os_str().to_os_string();
+            let subtrie = current_subtrie
+                .get(&segment)
+                .expect("should have contained segment");
+
+            built_path.insert(0, segment);
+
+            if subtrie.visits == 1 {
+                fnames.insert(
+                    doc.id(),
+                    PathBuf::from_iter(built_path.iter())
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+                break;
+            }
+
+            current_subtrie = &subtrie.parents;
+        }
+    }
+
+    fnames
 }
