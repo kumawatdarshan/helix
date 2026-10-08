@@ -2176,6 +2176,17 @@ name = "dart"
 source = { git = "https://github.com/UserNobody14/tree-sitter-dart", rev = "a9bdfa3db2fbc9b9f12c93450d04a671f33a5102" }
 
 [[language]]
+name = "dbc"
+scope = "source.dbc"
+file-types = [ "dbc" ]
+comment-token = "//"
+indent = {tab-width = 2, unit = "\t"}
+
+[[grammar]]
+name = "dbc"
+source = { git = "https://github.com/MerrimanInd/tree-sitter-dbc", rev = "b6a1a117731e1f16b2106214b4e0501628f93382" }
+
+[[language]]
 name = "scala"
 scope = "source.scala"
 roots = ["build.sbt", "build.sc", "build.gradle", "build.gradle.kts", "pom.xml", ".scala-build"]
