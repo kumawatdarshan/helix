@@ -690,7 +690,6 @@ impl EditorView {
             .try_get("ui.bufferline")
             .unwrap_or_else(|| editor.theme.get("ui.statusline.inactive"));
 
-        let mut x = viewport.x;
         let current_doc = view!(editor).doc;
 
         self.bufferline_info.clear();
@@ -717,34 +716,80 @@ impl EditorView {
             ),
         };
 
-        for doc in editor.documents() {
-            let fname = fnames.get(&doc.id()).unwrap();
+        // Build one label per open document first so the visible window can be
+        // chosen to keep the active buffer on screen (scrolling on overflow).
+        struct BufferlineEntry {
+            id: DocumentId,
+            label: String,
+            style: Style,
+            width: u16,
+        }
+        let entries: Vec<BufferlineEntry> = editor
+            .documents()
+            .map(|doc| {
+                let fname = fnames.get(&doc.id()).unwrap();
 
-            let style = if current_doc == doc.id() {
-                bufferline_active
-            } else {
-                bufferline_inactive
-            };
+                let style = if current_doc == doc.id() {
+                    bufferline_active
+                } else {
+                    bufferline_inactive
+                };
 
-            // Scratch buffers never show `[+]`, even when modified
-            let modified = if doc.is_modified() && doc.path().is_some() {
-                "[+]"
-            } else {
-                ""
-            };
-            let text = format!(" {fname}{modified} ");
-            let used_width = viewport.x.saturating_sub(x);
-            let rem_width = surface.area.width.saturating_sub(used_width);
+                // Scratch buffers never show `[+]`, even when modified
+                let modified = if doc.is_modified() && doc.path().is_some() {
+                    "[+]"
+                } else {
+                    ""
+                };
+                let label = format!(" {fname}{modified} ");
+                let width = label.width() as u16;
+                BufferlineEntry {
+                    id: doc.id(),
+                    label,
+                    style,
+                    width,
+                }
+            })
+            .collect();
+
+        let widths: Vec<u16> = entries.iter().map(|entry| entry.width).collect();
+        let active = entries
+            .iter()
+            .position(|entry| entry.id == current_doc)
+            .unwrap_or(0);
+        let scroll = bufferline_scroll_offset(&widths, active, viewport.width);
+
+        let mut x = viewport.x;
+        let mut pos = 0u16;
+        let window_end = scroll.saturating_add(viewport.width);
+        for entry in &entries {
+            let entry_end = pos.saturating_add(entry.width);
+            if entry_end <= scroll {
+                // Fully scrolled out on the left: record nothing so clicks
+                // can't hit it.
+                pos = entry_end;
+                continue;
+            }
+            if pos >= window_end {
+                break;
+            }
+            let visible = visible_label_slice(
+                &entry.label,
+                scroll.saturating_sub(pos),
+                window_end.saturating_sub(pos),
+            );
+            let remaining = viewport.right().saturating_sub(x) as usize;
 
             let start_x = x;
             x = surface
-                .set_stringn(x, viewport.y, &text, rem_width as usize, style)
+                .set_stringn(x, viewport.y, &visible, remaining, entry.style)
                 .0;
             let end_x = x.min(surface.area.right());
 
             self.bufferline_info
-                .add_buffer_info(doc.id(), start_x..end_x);
+                .add_buffer_info(entry.id, start_x..end_x);
 
+            pos = entry_end;
             if x >= surface.area.right() {
                 break;
             }
@@ -1932,6 +1977,52 @@ impl Component for EditorView {
     }
 }
 
+/// Computes the left scroll offset (in display columns) for the bufferline so
+/// that the active entry stays fully visible, centered when there is room.
+/// Falls back to the entry's start when it is wider than the viewport.
+fn bufferline_scroll_offset(widths: &[u16], active: usize, viewport_width: u16) -> u16 {
+    let total: u16 = widths.iter().copied().fold(0, u16::saturating_add);
+    if total <= viewport_width {
+        return 0;
+    }
+    let before: u16 = widths
+        .iter()
+        .take(active)
+        .copied()
+        .fold(0, u16::saturating_add);
+    let active_width: u16 = widths.get(active).copied().unwrap_or(0);
+    if active_width > viewport_width {
+        return before.min(total.saturating_sub(viewport_width));
+    }
+    let target = before
+        .saturating_add(active_width / 2)
+        .saturating_sub(viewport_width / 2);
+    let min = before
+        .saturating_add(active_width)
+        .saturating_sub(viewport_width);
+    target.clamp(min, before)
+}
+
+/// Returns the slice of `label` whose display columns fall in `[skip, end)`.
+/// A wide grapheme straddling an edge is kept whole; drawing is clipped to the
+/// viewport by the caller.
+fn visible_label_slice(label: &str, skip: u16, end: u16) -> String {
+    use helix_core::unicode::width::UnicodeWidthChar;
+    let mut out = String::new();
+    let mut col = 0u16;
+    for ch in label.chars() {
+        let next = col.saturating_add(UnicodeWidthChar::width(ch).unwrap_or(0) as u16);
+        if col < end && next > skip {
+            out.push(ch);
+        }
+        col = next;
+        if col >= end {
+            break;
+        }
+    }
+    out
+}
+
 #[derive(Debug, Default)]
 struct BufferLineInfo {
     visible_buffers: Vec<BufferInfo>,
@@ -2043,4 +2134,60 @@ fn expand_fname_contexts<'a>(
     }
 
     fnames
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bufferline_scroll_offset, visible_label_slice};
+
+    #[test]
+    fn scroll_offset_no_scroll_when_fitting() {
+        assert_eq!(bufferline_scroll_offset(&[10, 10, 10], 2, 30), 0);
+        assert_eq!(bufferline_scroll_offset(&[10, 10, 10], 2, 100), 0);
+        assert_eq!(bufferline_scroll_offset(&[], 0, 80), 0);
+    }
+
+    #[test]
+    fn scroll_offset_centers_active_buffer() {
+        // 10 entries of width 10 in a 30-wide viewport: total 100.
+        let widths = [10u16; 10];
+        // Active at start: no scroll.
+        assert_eq!(bufferline_scroll_offset(&widths, 0, 30), 0);
+        // Active entry 5 ([50, 60)) centered: middle at 55 - 40 = 15.
+        assert_eq!(bufferline_scroll_offset(&widths, 5, 30), 40);
+        // Active at end ([90, 100)) centered, not just clamped to max.
+        assert_eq!(bufferline_scroll_offset(&widths, 9, 30), 80);
+    }
+
+    #[test]
+    fn scroll_offset_keeps_active_fully_visible() {
+        let widths = [20u16; 4];
+        // Total 80, viewport 30: active entry 3 ([60, 80)) fully shown at [5, 25).
+        assert_eq!(bufferline_scroll_offset(&widths, 3, 30), 55);
+    }
+
+    #[test]
+    fn scroll_offset_oversized_active_shows_its_start() {
+        let widths = [50u16, 10, 10];
+        assert_eq!(bufferline_scroll_offset(&widths, 0, 30), 0);
+    }
+
+    #[test]
+    fn label_slice_ascii_window() {
+        let label = " abc[+] ";
+        assert_eq!(visible_label_slice(label, 0, 8), " abc[+] ");
+        assert_eq!(visible_label_slice(label, 2, 6), "bc[+");
+        assert_eq!(visible_label_slice(label, 0, 0), "");
+    }
+
+    #[test]
+    fn label_slice_wide_chars_use_display_width() {
+        // Each CJK char is 2 display columns: " a\u{3042} " is 1 + 1 + 2 + 1 = 5 wide.
+        let label = " a\u{3042} ";
+        assert_eq!(visible_label_slice(label, 0, 5), label);
+        // Skipping 1 column still keeps the whole wide char (edge straddle).
+        assert_eq!(visible_label_slice(label, 1, 5), "a\u{3042} ");
+        // Skipping past it drops it.
+        assert_eq!(visible_label_slice(label, 4, 5), " ");
+    }
 }
